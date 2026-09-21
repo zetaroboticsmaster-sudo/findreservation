@@ -816,6 +816,25 @@ function _parseClubsea(rawHtml) {
   return available;
 }
 
+// 파싱 실패 시 진단 정보 구성: 전체 길이 / 키워드 존재여부 / "월" 주변 문맥
+// (이전엔 첫 200자만 봤는데 항상 메뉴바만 나와서 무용했음 → 실제 단서 위치를 찾아 보여줌)
+function buildDiagnostic(plain) {
+  const parts = [];
+  parts.push(`길이:${plain.length}자`);
+  const kws = ['바로예약','남은자리','예약마감','대기하기','예약완료','남은좌석'];
+  const found = kws.filter(k => plain.includes(k));
+  parts.push(`키워드:[${found.join(',')||'없음'}]`);
+  const m = plain.match(/\d+월/);
+  if (m) {
+    const idx = m.index;
+    parts.push(`'월'주변: ${plain.slice(Math.max(0,idx-20), idx+180)}`);
+  } else {
+    const mid = plain.slice(Math.floor(plain.length/2), Math.floor(plain.length/2)+200);
+    parts.push(`중간부분: ${mid}`);
+  }
+  return parts.join(' | ');
+}
+
 function parseAvail(rawHtml) {
   // HTML 태그 제거 + 엔티티 디코딩된 평문 텍스트로 정규화
   const plain = normalizeHtml(rawHtml);
@@ -829,10 +848,10 @@ function parseAvail(rawHtml) {
   const r = _parseBlocks(plain);
   if (r.avail.length > 0) return r.avail;
 
-  // 날짜 형식 자체가 안 잡히면 파싱 실패 — 진단용 스니펫 첨부
+  // 날짜 형식 자체가 안 잡히면 파싱 실패 — 진단 정보 첨부
   if (!r.fmt) {
     const err = new Error('날짜 데이터 없음 (페이지 구조 확인 필요)');
-    err.snippet = plain.slice(0, 200);
+    err.snippet = buildDiagnostic(plain);
     throw err;
   }
   return [];  // 날짜는 있으나 자리 없음 (정상)
@@ -906,17 +925,16 @@ async function checkSite(id) {
   updateStats();
 }
 
-// 순차 확인: 사이트를 하나씩 (동시 요청 폭주 방지)
+// 병렬 확인: 자체 서버 함수(netlify-fn)가 주력이라 동시 요청에 안전함
+// → 한 번에 전체 사이트를 동시에 확인해서 결과를 한눈에 볼 수 있음
 let _checkingNow = false;
-async function checkAllSequential() {
+async function checkAllSequential() {  // 이름 유지(호출부 영향 최소화), 내부는 병렬
   if (_checkingNow) return;  // 이전 사이클이 아직 안 끝났으면 스킵
   _checkingNow = true;
   try {
-    for (const s of S.sites) {
-      if (s.paused) continue;
-      await checkSite(s.id);
-      await sleep(600);  // 사이트 간 간격 (프록시 부하 완화)
-    }
+    await Promise.allSettled(
+      S.sites.filter(s => !s.paused).map(s => checkSite(s.id))
+    );
   } finally {
     _checkingNow = false;
   }
@@ -993,10 +1011,13 @@ function qadd(k) {
   if (d) { addSite({...d}); switchTab(0); }
 }
 
+// 테스트 단계: 우선 이 4곳만 자동 추가 (나머지는 DEFS에 남아있어 개별 추가는 가능)
+const TEST_SCOPE = ['myungjin', 'wooah', 'bluefishing', 'clubsea'];
+
 function addAll() {
-  Object.keys(DEFS).forEach(k => {
+  TEST_SCOPE.forEach(k => {
     const d = DEFS[k];
-    if (!S.sites.find(s => s.url === d.url)) addSite({...d});
+    if (d && !S.sites.find(s => s.url === d.url)) addSite({...d});
   });
   switchTab(0);
 }
