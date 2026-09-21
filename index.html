@@ -741,29 +741,36 @@ function normalizeHtml(rawHtml) {
 }
 
 // 두 사이트 형식 모두 지원하는 범용 파서
-// 형식 A (sunsang24): "4월 9일(목)" + 바로예약/남은자리 vs 예약마감/대기하기
+// 형식 A (sunsang24 리스트뷰): "4월 9일(목)" + 바로예약/남은자리 vs 예약마감/대기하기
 // 형식 B (thefishing/블루피싱): "9.4(금)" + 남은자리 N명 vs 예약완료
+// 형식 D (sunsang24 월별뷰 추정): 월은 선택 드롭다운에 한 번만 있고, 행마다는 "9일(목)"처럼 일자만 반복
 // 태그 제거 후 셀 사이에 공백이 남을 수 있어 "일"과 "(" 사이도 \s* 허용
 function _parseBlocks(html) {
   const reA = /\d+월\s*\d+일\s*\([가-힣]+\)/;
   const reB = /\d+\.\d+\s*\([가-힣]\)/;
+  const reD = /\d+일\s*\([가-힣]\)/;
 
   let fmt = null;
   if (reA.test(html)) fmt = 'A';
   else if (reB.test(html)) fmt = 'B';
+  else if (reD.test(html)) fmt = 'D';
   if (!fmt) return { avail: [], fmt: null };
 
-  const splitRe = fmt === 'A' ? /(?=\d+월\s*\d+일\s*\([가-힣]+\))/ : /(?=\d+\.\d+\s*\([가-힣]\))/;
-  const dateRe  = fmt === 'A' ? /(\d+월\s*\d+일\s*\([가-힣]+\))/   : /(\d+\.\d+\s*\([가-힣]\))/;
+  const splitRe = fmt === 'A' ? /(?=\d+월\s*\d+일\s*\([가-힣]+\))/
+                : fmt === 'B' ? /(?=\d+\.\d+\s*\([가-힣]\))/
+                :                /(?=\d+일\s*\([가-힣]\))/;
+  const dateRe  = fmt === 'A' ? /(\d+월\s*\d+일\s*\([가-힣]+\))/
+                : fmt === 'B' ? /(\d+\.\d+\s*\([가-힣]\))/
+                :                /(\d+일\s*\([가-힣]\))/;
 
   const avail = [];
   for (const block of html.split(splitRe)) {
     const dm = block.match(dateRe);
     if (!dm) continue;
     const date = dm[1].replace(/\s/g,'');
-    // 마감 키워드 (두 형식 통합)
+    // 마감 키워드 (형식 통합)
     const closed = block.includes('예약마감') || block.includes('대기하기') || block.includes('예약완료');
-    // 가능 키워드 (두 형식 통합)
+    // 가능 키워드 (형식 통합)
     const open   = block.includes('바로예약') || block.includes('남은자리') || block.includes('남은좌석');
     if (open && !closed) avail.push(date);
   }
@@ -816,18 +823,20 @@ function _parseClubsea(rawHtml) {
   return available;
 }
 
-// 파싱 실패 시 진단 정보 구성: 전체 길이 / 키워드 존재여부 / "월" 주변 문맥
-// (이전엔 첫 200자만 봤는데 항상 메뉴바만 나와서 무용했음 → 실제 단서 위치를 찾아 보여줌)
+// 파싱 실패 시 진단 정보 구성: 전체 길이 / 키워드 존재여부 / 키워드 주변 문맥
+// (이전엔 "월" 글자 기준으로 찾았는데 날짜선택 드롭다운(9월~8월)에 걸려 무용했음
+//  → 실제 상태 키워드(바로예약 등) 바로 주변을 보여줘야 진짜 날짜 형식이 드러남)
 function buildDiagnostic(plain) {
   const parts = [];
   parts.push(`길이:${plain.length}자`);
   const kws = ['바로예약','남은자리','예약마감','대기하기','예약완료','남은좌석'];
   const found = kws.filter(k => plain.includes(k));
   parts.push(`키워드:[${found.join(',')||'없음'}]`);
-  const m = plain.match(/\d+월/);
-  if (m) {
-    const idx = m.index;
-    parts.push(`'월'주변: ${plain.slice(Math.max(0,idx-20), idx+180)}`);
+
+  if (found.length > 0) {
+    // 첫 키워드 등장 위치 주변 (앞쪽에 날짜가 있을 가능성이 높으므로 앞을 더 넓게)
+    const idx = plain.indexOf(found[0]);
+    parts.push(`'${found[0]}'주변: ${plain.slice(Math.max(0,idx-120), idx+120)}`);
   } else {
     const mid = plain.slice(Math.floor(plain.length/2), Math.floor(plain.length/2)+200);
     parts.push(`중간부분: ${mid}`);
